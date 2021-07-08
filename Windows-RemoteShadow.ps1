@@ -1,6 +1,19 @@
 ﻿$baseDir = Split-Path $myinvocation.mycommand.path -Parent
 #https://github.com/Mentaleak/Show-LoadingScreen
-import-module (Join-Path -Path $baseDir -ChildPath "Show-LoadingScreen.ps1")
+# import-module (Join-Path -Path $baseDir -ChildPath "Show-LoadingScreen.ps1")
+
+# Конвертер кодировки при выводе, иначе поиск не работает по выводу
+function ConvertTo-Encoding ([string]$From, [string]$To) {
+    Begin {
+        $encFrom = [System.Text.Encoding]::GetEncoding($from)
+        $encTo = [System.Text.Encoding]::GetEncoding($to)
+    }
+    Process {
+        $bytes = $encTo.GetBytes($_)
+        $bytes = [System.Text.Encoding]::Convert($encFrom, $encTo, $bytes)
+        $encTo.GetString($bytes)
+    }
+}
 
 function get-ADSIComputers(){
 param(
@@ -88,7 +101,17 @@ function connect-rdpSession(){
     [switch]$control,
     [switch]$noConsent
     )
-    $command="/prompt /V:$($fqdn) /shadow:$($sessionID)"
+    
+    # Проверяем компьютер в домене или нет. Запрашивать Учетные данные или нет
+    if ((gwmi win32_computersystem).partofdomain -eq $true) {
+        write-host -fore green "Мой комп в домене"
+        $command = "/V:$($fqdn) /shadow:$($sessionID)"
+    }
+    else {
+        write-host -fore red "Мой комп НЕ в домене"
+        $command = "/prompt /V:$($fqdn) /shadow:$($sessionID)"
+    }
+
     if($control){
     $command+=" /control /admin"
     }
@@ -189,18 +212,38 @@ $BtnBrowse.Add_Click(
 $BtnConnect.Add_Click(
         {    
             if($HostInput.Text){
-                        $computername=$HostInput.Text
+                $computername=$HostInput.Text
+
+
+                # Проверяем компьютер в домене или нет. Запрашивать Учетные данные или нет
+                if ((gwmi win32_computersystem).partofdomain -eq $true) {
+                    write-host -fore green "Мой комп в домене"
+                    $ss = Invoke-Command -ComputerName $computername `
+                        -ScriptBlock { qwinsta.exe } | ConvertTo-Encoding -From cp866 -To windows-1251
+                }
+                else {
+                    write-host -fore red "Мой комп НЕ в домене"
+                    $ss = Invoke-Command -ComputerName $computername `
+                        -ScriptBlock { qwinsta.exe } `
+                        -Credential $(Get-Credential) | ConvertTo-Encoding -From cp866 -To windows-1251
+                }
+
+                $Header = "SESSIONNAME", "USERNAME", "ID", "STATUS"
+                $sessions = (($ss) -replace "^[\s>]" , "" -replace "\s+" , "," | ConvertFrom-Csv -Header $Header)
+                $sessions
+                $SessionActiveID = ($sessions | Where-Object { $_.STATUS -eq 'Активно' -or $_.STATUS -eq 'Active' }).ID
+
 
                 if($CheckBoxControl.Checked -and $CheckBoxnoConsent.Checked){
-                    connect-rdpSession -fqdn $computername -sessionID 1 -control -noconsent
+                    connect-rdpSession -fqdn $computername -sessionID $SessionActiveID -control -noconsent
                     }elseif($CheckBoxControl.Checked){
-                    connect-rdpSession -fqdn $computername -sessionID 1 -control
+                    connect-rdpSession -fqdn $computername -sessionID $SessionActiveID -control
                     }
                     elseif($CheckBoxnoConsent.Checked){
-                    connect-rdpSession -fqdn $computername -sessionID 1 -noConsent
+                    connect-rdpSession -fqdn $computername -sessionID $SessionActiveID -noConsent
                     }
                     else{
-                    connect-rdpSession -fqdn $computername -sessionID 1
+                    connect-rdpSession -fqdn $computername -sessionID $SessionActiveID
                     }
                                             $form.Dispose()
             }else{
